@@ -1,5 +1,6 @@
 import os
 import asyncio
+from dotenv import load_dotenv
 from io import BytesIO
 import requests
 from PIL import Image as PILImage
@@ -12,6 +13,7 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import MultiModalMessage
 
 async def main():
+    load_dotenv()
     # Initialize the Azure AI Chat Completion Client with vision capabilities
     client = AzureAIChatCompletionClient(
         model="meta/Llama-4-Scout-17B-16E-Instruct",  # Replace with your vision-capable model name
