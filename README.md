@@ -1,4 +1,4 @@
-# GitHub Models - Limited Public Beta
+# GitHub Models - Limited Public Beta - Demonstrated By Charunthon Limseelo
 
 Welcome to your shiny new Codespace for interacting with GitHub Models! We've got everything fired up and ready for you to explore AI Models hosted on Azure AI.
 
