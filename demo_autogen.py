@@ -14,14 +14,14 @@ from autogen_agentchat.messages import MultiModalMessage
 async def main():
     # Initialize the Azure AI Chat Completion Client with vision capabilities
     client = AzureAIChatCompletionClient(
-        model="gpt-4o",  # Replace with your vision-capable model name
-        endpoint="https://models.inference.ai.azure.com",
+        model="meta/Llama-4-Scout-17B-16E-Instruct",  # Replace with your vision-capable model name
+        endpoint="https://models.github.ai/inference",
         credential=AzureKeyCredential(os.environ["GITHUB_TOKEN"]),
         model_info={
             "json_output": False,
             "function_calling": False,
             "vision": True,
-            "family": ModelFamily.GPT_4O,
+            "family": "unknown",
             "structured_output": False,
         },
     )
