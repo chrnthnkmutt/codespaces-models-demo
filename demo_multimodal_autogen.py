@@ -45,7 +45,7 @@ async def main():
         
         try:
             # Fetch an image from the web
-            image_url = "https://picsum.photos/300/200"
+            image_url = "https://static.independent.co.uk/2025/04/19/19/41/GettyImages-2210861096.jpg"
             response = requests.get(image_url, timeout=10)
             response.raise_for_status()  # Raise an exception for bad responses
             pil_image = PILImage.open(BytesIO(response.content))
