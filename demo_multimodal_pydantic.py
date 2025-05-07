@@ -1,170 +1,99 @@
-import os
 import base64
-import asyncio
-from typing import List, Optional, Union, Literal
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+# import openai # openai import is redundant if OpenAI is imported directly
+from pydantic import BaseModel
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
-from azure.ai.foundry import FoundryClient
-from azure.core.credentials import AzureKeyCredential
+# Load environment variables
+load_dotenv()
 
+class Object(BaseModel):
+  name: str
+  confidence: float
+  attributes: str 
 
-# Define Pydantic models for data validation
-class ModelInfo(BaseModel):
-    """Information about LLM capabilities"""
-    vision: bool = True
-    json_output: bool = False
-    function_calling: bool = False
-    family: str = "unknown"
-    structured_output: bool = False
+class ImageDescription(BaseModel):
+  summary: str
+  objects: List[Object]
+  scene: str
+  colors: List[str]
+  time_of_day: Literal['Morning', 'Afternoon', 'Evening', 'Night']
+  setting: Literal['Indoor', 'Outdoor', 'Unknown']
+  text_content: Optional[str] = None
 
+class ImageAnalysisAgent:
+    def __init__(self):
+        # Ensure you have your OPENAI_API_KEY or GITHUB_TOKEN set as an environment variable
+        # self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if not github_token:
+            raise ValueError("GITHUB_TOKEN environment variable not set.")
+        self.client = OpenAI(base_url="https://models.github.ai/inference", api_key=github_token)
 
-class AzureConfig(BaseModel):
-    """Configuration for Azure AI Foundry"""
-    endpoint: str
-    api_key: str
-    model_info: ModelInfo
+    def _encode_image_to_base64(self, image_path: str) -> str:
+        """Encodes an image file to a base64 string."""
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
 
-
-class TextContent(BaseModel):
-    """Text content for messages"""
-    type: Literal["text"] = "text"
-    data: str
-
-
-class ImageContent(BaseModel):
-    """Image content for messages"""
-    type: Literal["image"] = "image"
-    data: bytes
-    format: str = "jpeg"
-
-
-class MultiModalMessage(BaseModel):
-    """Message containing text and/or images"""
-    content: List[Union[TextContent, ImageContent]]
-    source: str
-
-
-class AssistantResponse(BaseModel):
-    """Response from the assistant"""
-    role: str = "assistant"
-    content: str
-
-
-class VisionAgent:
-    """Agent that processes images using Azure AI Foundry"""
-    
-    def __init__(self, config: AzureConfig):
-        """Initialize the agent with configuration"""
-        self.config = config
-        self.name = "vision_agent"
-        self.client = FoundryClient(
-            endpoint=self.config.endpoint,
-            credential=AzureKeyCredential(self.config.api_key)
-        )
-    
-    async def process_message(self, message: MultiModalMessage) -> AssistantResponse:
-        """Process a multimodal message and return a response"""
-        # Extract text and images from the message
-        prompt = " ".join([item.data for item in message.content if item.type == "text"])
-        image_items = [item for item in message.content if item.type == "image"]
-        
-        print(f"Processing request with {len(image_items)} image(s)")
-        print(f"Prompt: {prompt}")
-        
+    def analyze_image(self, image_path: str) -> ImageDescription:
+        """
+        Analyzes an image and returns a structured description.
+        """
         try:
-            # Prepare for API call
-            print("\nSending request to Azure AI Foundry...")
-            headers = {"Content-Type": "application/json"}
-            
-            # Prepare base64 encoded images
-            image_contents = []
-            for item in image_items:
-                encoded = base64.b64encode(item.data).decode('utf-8')
-                image_contents.append({
-                    "type": "image_url", 
-                    "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}
-                })
-            
-            # Combine text and images into API payload
-            payload = {
-                "documents": [
+            base64_image = self._encode_image_to_base64(image_path)
+
+            prompt_text = f"""Analyze this image and describe what you see, including any objects, the scene, colors and any text you can detect.
+Please provide the output in a JSON format that strictly adheres to the following Pydantic schema:
+{ImageDescription.model_json_schema()}
+"""
+
+            response = self.client.chat.completions.create(
+              model="openai/gpt-4o", # Or "gpt-4-vision-preview"
+              response_format={"type": "json_object"},
+              messages=[
+                {
+                  "role": "user",
+                  "content": [
+                    {"type": "text", "text": prompt_text},
                     {
-                        "id": "1",
-                        "language": "en",
-                        "text": prompt
+                      "type": "image_url",
+                      "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
+                      }
                     }
-                ]
-            }
-            
-            # Make the API call
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.config.endpoint}/foundry/v1.0/analyze", 
-                    headers=headers, 
-                    json=payload
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise Exception(f"API error (status {response.status}): {error_text}")
-                    
-                    result = await response.json()
-                    return AssistantResponse(content=result["documents"][0]["entities"])
-                    
+                  ]
+                }
+              ],
+              temperature=0,
+            )
+
+            json_response_content = response.choices[0].message.content
+            if json_response_content is None:
+                raise ValueError("Received an empty response from the API.")
+            image_description = ImageDescription.model_validate_json(json_response_content)
+            return image_description
+
+        except FileNotFoundError:
+            print(f"Error: Image file not found at {image_path}. Please update the path.")
+            raise
         except Exception as e:
-            error_message = f"Error processing image with Azure AI Foundry: {str(e)}"
-            print(error_message)
-            return AssistantResponse(content=f"Error: {str(e)}")
-
-
-async def main():
-    """Main entry point for the application"""
-    print("=== Pydantic Vision Agent for Azure AI Foundry ===")
-    print("Using structured data validation with Pydantic")
-    
-    # Check Azure AI Foundry requirements
-    print("Prerequisites:")
-    print("1. Make sure you have an Azure account and API key")
-    print("2. Make sure you have the endpoint URL for Azure AI Foundry")
-    
-    # Initialize configuration
-    config = AzureConfig(
-        endpoint="https://<your-endpoint>.cognitiveservices.azure.com/",
-        api_key="<your-api-key>",
-        model_info=ModelInfo(vision=True)
-    )
-    
-    # Initialize the agent
-    agent = VisionAgent(config)
-    
-    # Prepare the image
-    image_path = "GettyImages.jpg"
-    
-    # Verify the image exists
-    if not os.path.exists(image_path):
-        print(f"Error: Image file {image_path} not found.")
-        print(f"Current working directory: {os.getcwd()}")
-        print("Available files:")
-        print(os.listdir("."))
-        return
-    
-    # Load the image data
-    with open(image_path, "rb") as f:
-        image_data = f.read()
-    
-    # Create a structured multimodal message
-    message = MultiModalMessage(
-        content=[
-            TextContent(data="Can you describe the content of this image?"),
-            ImageContent(data=image_data)
-        ],
-        source="user"
-    )
-    
-    # Process the message and get response
-    response = await agent.process_message(message)
-    print("\nResponse from Azure AI Foundry:")
-    print(response.content)
-
+            print(f"An error occurred during image analysis: {e}")
+            raise
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    image_path = './sample.png' # Replace with your actual image path
+    
+    # Ensure the image path is correct and the file exists.
+    if not os.path.exists(image_path):
+        print(f"Error: Image file not found at {image_path}. Please create a sample.png or update the path.")
+    else:
+        try:
+            agent = ImageAnalysisAgent()
+            description = agent.analyze_image(image_path)
+            print(description.model_dump_json(indent=2))
+        except ValueError as ve: # Catch specific errors like missing token
+            print(f"Configuration error: {ve}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
