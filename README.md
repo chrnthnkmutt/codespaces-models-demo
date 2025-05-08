@@ -1,6 +1,6 @@
-# GitHub Models - Limited Public Beta - Demonstrated By Charunthon Limseelo
+# GitHub Models Repository - Demonstrated By Charunthon Limseelo
 
-Welcome to your shiny new Codespace for interacting with GitHub Models! We've got everything fired up and ready for you to explore AI Models hosted on Azure AI.
+Welcome to the repository for interacting with GitHub Models! We've got everything fired up and ready for you to explore AI Models hosted on Azure AI.
 
 The git history is a nearly-blank canvas; there's a single initial commit with the contents you're seeing right now - where you go from here is up to you!
 
