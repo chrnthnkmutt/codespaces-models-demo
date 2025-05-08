@@ -8,9 +8,27 @@ from openai import OpenAI, AzureOpenAI
 # Load environment variables
 load_dotenv()
 
+from typing import Any, Optional, List, Dict, Union
+
 class CityLocation(BaseModel):
     city: str
     country: str
+
+class Mountain(BaseModel):
+    name: str
+    height: str  # Height in meters
+    location: str  # Country or region
+    
+class DynamicResponse(BaseModel):
+    """A flexible model that can handle any type of response"""
+    # Make it accept any fields without requiring a nested "response" field
+    model_config = {
+        "extra": "allow"
+    }
+    
+    def __str__(self) -> str:
+        """Pretty print the response"""
+        return "\n".join(f"{k}: {v}" for k, v in self.model_dump().items())
 
 class AgentResult:
     """Simple container for agent results"""
@@ -34,9 +52,24 @@ class SimpleAgent:
         schema = self.output_type.model_json_schema()
         schema_str = json.dumps(schema, indent=2)
         
-        # Create a prompt that requests output in the schema format
+        # Create a system message based on the output type
+        system_content = ""
+        
+        # Different instructions based on the schema type
+        if self.output_type == DynamicResponse:
+            system_content = """You are a helpful assistant that provides information in a structured JSON format.
+Please provide your answer as a JSON object with relevant key-value pairs that best answer the user's question.
+Be concise but informative. Return ONLY valid JSON without any preamble or explanation."""
+        else:
+            system_content = f"""You are a helpful assistant that outputs information in a specific JSON format.
+The required output format follows this schema:
+{schema_str}
+
+Only return valid JSON that matches this schema, without any preamble or explanation."""
+        
+        # Create the messages with the appropriate system content
         messages = [
-            {"role": "system", "content": f"You are a helpful assistant that outputs information in a specific JSON format. The required output format follows this schema:\n{schema_str}\n\nOnly return valid JSON that matches this schema, without any preamble or explanation."},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": query}
         ]
         
@@ -107,10 +140,24 @@ def create_agent(provider_type='github', output_type=CityLocation):
         if not api_key:
             raise ValueError("GITHUB_TOKEN not set in environment")
             
-        client = OpenAI(
-            api_key=api_key,
-            base_url='https://models.github.ai/inference'
-        )
+        try:
+            # Try standard initialization
+            client = OpenAI(
+                api_key=api_key,
+                base_url='https://models.github.ai/inference'
+            )
+        except TypeError as e:
+            if 'proxies' in str(e):
+                # Handle the specific case of 'proxies' parameter
+                import httpx
+                client = OpenAI(
+                    api_key=api_key,
+                    base_url='https://models.github.ai/inference',
+                    http_client=httpx.Client()
+                )
+            else:
+                # Other TypeError, re-raise
+                raise
     
     elif provider_type == 'azure':
         azure_endpoint = os.environ.get("AZURE_ENDPOINT")
@@ -153,9 +200,22 @@ def create_agent(provider_type='github', output_type=CityLocation):
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY not set in environment")
             
-        client = OpenAI(
-            api_key=openai_api_key
-        )
+        try:
+            # Try standard initialization
+            client = OpenAI(
+                api_key=openai_api_key
+            )
+        except TypeError as e:
+            if 'proxies' in str(e):
+                # Handle the specific case of 'proxies' parameter
+                import httpx
+                client = OpenAI(
+                    api_key=openai_api_key,
+                    http_client=httpx.Client()
+                )
+            else:
+                # Other TypeError, re-raise
+                raise
     
     else:
         raise ValueError(f"Unsupported provider type: {provider_type}")
@@ -171,6 +231,8 @@ if __name__ == "__main__":
                         help='Provider to use: github, azure, or local')
     parser.add_argument('--query', type=str, default='Where were the olympics held in 2012?',
                         help='Query to send to the agent')
+    parser.add_argument('--schema', type=str, choices=['city', 'mountain', 'dynamic'],
+                        help='Schema to use for the response (defaults to dynamic)')
     
     args = parser.parse_args()
     
@@ -187,8 +249,20 @@ if __name__ == "__main__":
                 print("Please update the .env file with your actual Azure credentials.")
                 # Continue anyway as the function will catch this error
         
-        # Create agent with specified provider
-        agent = create_agent(provider_type=args.provider)
+        # Use dynamic response for all queries by default
+        output_type = DynamicResponse
+        
+        # Allow specifying a schema type via command line if needed
+        if hasattr(args, 'schema') and args.schema:
+            if args.schema == 'city':
+                output_type = CityLocation
+                print("Using CityLocation schema")
+            elif args.schema == 'mountain':
+                output_type = Mountain
+                print("Using Mountain schema")
+        
+        # Create agent with specified provider and output type
+        agent = create_agent(provider_type=args.provider, output_type=output_type)
         
         # Run the query
         print(f"Using provider: {args.provider}")
