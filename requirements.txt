@@ -10,5 +10,6 @@ requests
 autogen-core
 autogen-ext
 autogen-agentchat
-azure-ai-inference
-python-dotenv
+pydantic>=2.0.0
+httpx>=0.24.0
+typing-extensions>=4.5.0

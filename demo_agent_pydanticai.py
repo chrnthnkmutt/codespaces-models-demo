@@ -1,11 +1,9 @@
-from pydantic import BaseModel
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.providers.azure import AzureProvider
+from pydantic import BaseModel, field_validator
 import os
+import json
+from typing import Any, Dict, Type
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, AzureOpenAI
 
 # Load environment variables
 load_dotenv()
@@ -13,6 +11,85 @@ load_dotenv()
 class CityLocation(BaseModel):
     city: str
     country: str
+
+class AgentResult:
+    """Simple container for agent results"""
+    def __init__(self, output, usage_info):
+        self.output = output
+        self._usage_info = usage_info
+    
+    def usage(self):
+        return self._usage_info
+
+class SimpleAgent:
+    """A simplified agent implementation that doesn't require pydantic_ai"""
+    
+    def __init__(self, client, output_type: Type[BaseModel]):
+        self.client = client
+        self.output_type = output_type
+    
+    def run_sync(self, query: str) -> AgentResult:
+        """Run the agent with a query and return structured output"""
+        # Get the schema for the output type
+        schema = self.output_type.model_json_schema()
+        schema_str = json.dumps(schema, indent=2)
+        
+        # Create a prompt that requests output in the schema format
+        messages = [
+            {"role": "system", "content": f"You are a helpful assistant that outputs information in a specific JSON format. The required output format follows this schema:\n{schema_str}\n\nOnly return valid JSON that matches this schema, without any preamble or explanation."},
+            {"role": "user", "content": query}
+        ]
+        
+        # Call the model - determine which model name format to use based on client type
+        model_name = "gpt-4o"  # Default model name
+        
+        # Check if we're using AzureOpenAI client
+        if isinstance(self.client, AzureOpenAI):
+            # For Azure, we might need a deployment name instead of a model name
+            # This name should match your deployment in Azure
+            try:
+                # Try with the model name defined in Azure
+                response = self.client.chat.completions.create(
+                    model=model_name,  # This should match your deployment name in Azure
+                    response_format={"type": "json_object"},
+                    messages=messages
+                )
+            except Exception as e:
+                print(f"Warning: Error with model name '{model_name}'. Error: {str(e)}")
+                print("Trying with Azure deployment name 'gpt-4'...")
+                # Fallback to a common deployment name
+                response = self.client.chat.completions.create(
+                    model="gpt-4",  # Common Azure deployment name
+                    response_format={"type": "json_object"},
+                    messages=messages
+                )
+        else:
+            # For GitHub and local OpenAI
+            if "github.ai" in getattr(self.client, "base_url", ""):
+                # GitHub AI models often need the 'openai/' prefix
+                model_name = "openai/gpt-4o"
+                
+            response = self.client.chat.completions.create(
+                model=model_name,
+                response_format={"type": "json_object"},
+                messages=messages
+            )
+        
+        # Parse the response into the output type
+        json_content = response.choices[0].message.content
+        
+        # Simple usage tracking
+        usage_info = {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens
+        }
+        
+        try:
+            output = self.output_type.model_validate_json(json_content)
+            return AgentResult(output, usage_info)
+        except Exception as e:
+            raise ValueError(f"Failed to parse model output: {e}\nOutput was: {json_content}")
 
 def create_agent(provider_type='github', output_type=CityLocation):
     """
@@ -30,13 +107,9 @@ def create_agent(provider_type='github', output_type=CityLocation):
         if not api_key:
             raise ValueError("GITHUB_TOKEN not set in environment")
             
-        provider = OpenAIProvider(
+        client = OpenAI(
             api_key=api_key,
             base_url='https://models.github.ai/inference'
-        )
-        model = OpenAIModel(
-            model_name='openai/gpt-4o',
-            provider=provider
         )
     
     elif provider_type == 'azure':
@@ -47,15 +120,32 @@ def create_agent(provider_type='github', output_type=CityLocation):
         if not azure_endpoint or not azure_api_key:
             raise ValueError("AZURE_ENDPOINT or AZURE_API_KEY not set in environment")
             
-        provider = AzureProvider(
-            azure_endpoint=azure_endpoint,
-            api_version=azure_api_version,
-            api_key=azure_api_key,
-        )
-        model = OpenAIModel(
-            model_name='gpt-4o',  # Azure model deployment name
-            provider=provider
-        )
+        # Check OpenAI version and use the appropriate parameters
+        try:
+            # Different versions of openai library have different parameters
+            client = AzureOpenAI(
+                azure_endpoint=azure_endpoint,
+                api_version=azure_api_version,
+                api_key=azure_api_key
+            )
+        except TypeError as e:
+            if 'proxies' in str(e):
+                # Handle the specific case of 'proxies' parameter
+                # This workaround handles the issue with some OpenAI library versions
+                import httpx
+                client = AzureOpenAI(
+                    api_key=azure_api_key,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version,
+                    http_client=httpx.Client()
+                )
+            else:
+                # Try with older parameter format
+                client = AzureOpenAI(
+                    api_key=azure_api_key,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version
+                )
     
     elif provider_type == 'local':
         # For local setup using OpenAI directly
@@ -63,18 +153,14 @@ def create_agent(provider_type='github', output_type=CityLocation):
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY not set in environment")
             
-        provider = OpenAIProvider(
+        client = OpenAI(
             api_key=openai_api_key
-        )
-        model = OpenAIModel(
-            model_name='gpt-4o',
-            provider=provider
         )
     
     else:
         raise ValueError(f"Unsupported provider type: {provider_type}")
         
-    return Agent(model, output_type=output_type)
+    return SimpleAgent(client, output_type)
 
 if __name__ == "__main__":
     import argparse
@@ -128,3 +214,8 @@ if __name__ == "__main__":
         
         print("\nTo use Github provider, set:")
         print("- GITHUB_TOKEN: Your GitHub token")
+        
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
